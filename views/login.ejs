@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-gray-900 text-gray-100">
+<head>
+  <meta charset="UTF-8" />
+  <title>Login - DiscTube</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="flex items-center justify-center h-screen bg-gray-900">
+  <form method="POST" class="bg-gray-800 p-6 rounded shadow-md w-80">
+    <h2 class="text-2xl mb-4 text-center">Login</h2>
+    <% if (error) { %>
+      <p class="text-red-500 mb-4"><%= error %></p>
+    <% } %>
+    <label class="block mb-2">
+      Username:
+      <input name="username" required class="w-full p-2 rounded text-gray-900" />
+    </label>
+    <label class="block mb-4">
+      Password:
+      <input type="password" name="password" required class="w-full p-2 rounded text-gray-900" />
+    </label>
+    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 py-2 rounded text-white">Login</button>
+    <p class="mt-4 text-center text-gray-400">
+      Don't have an account? <a href="/signup" class="text-blue-400 hover:underline">Sign Up</a>
+    </p>
+  </form>
+</body>
+</html>

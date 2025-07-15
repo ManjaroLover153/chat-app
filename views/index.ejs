@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-gray-900 text-gray-100">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DiscTube Chat</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  /* Scrollbar styling */
+  #user-list::-webkit-scrollbar, #messages::-webkit-scrollbar {
+    width: 6px;
+  }
+  #user-list::-webkit-scrollbar-thumb, #messages::-webkit-scrollbar-thumb {
+    background-color: #2563eb;
+    border-radius: 3px;
+  }
+  .modal-bg {
+    background: rgba(0,0,0,0.75);
+  }
+</style>
+</head>
+<body class="flex h-screen overflow-hidden">
+
+<!-- Left sidebar -->
+<aside class="w-64 bg-gray-800 flex flex-col p-4">
+  <h2 class="text-xl font-bold mb-4">Users & Friends</h2>
+
+  <div>
+    <h3 class="font-semibold mb-2">Friend Requests</h3>
+    <ul id="friend-requests" class="mb-4 max-h-32 overflow-y-auto space-y-2"></ul>
+  </div>
+
+  <div>
+    <h3 class="font-semibold mb-2">Friends</h3>
+    <ul id="friends-list" class="mb-4 max-h-48 overflow-y-auto space-y-2"></ul>
+  </div>
+
+  <div>
+    <h3 class="font-semibold mb-2">Online Users</h3>
+    <ul id="user-list" class="max-h-48 overflow-y-auto space-y-2"></ul>
+  </div>
+
+  <button id="logout-btn" class="mt-auto bg-red-600 hover:bg-red-700 py-2 rounded w-full">Logout</button>
+</aside>
+
+<!-- Center chat -->
+<main class="flex flex-col flex-grow p-4">
+  <h1 class="text-3xl mb-4 font-bold">Public Chat</h1>
+  <ul id="messages" class="flex-grow overflow-y-auto mb-4 space-y-2"></ul>
+  <form id="chat-form" class="flex">
+    <input id="msg" autocomplete="off" placeholder="Type a message..." class="flex-grow rounded px-3 py-2 text-gray-900" />
+    <button type="submit" class="ml-2 bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-white">Send</button>
+  </form>
+</main>
+
+<!-- Right sidebar: settings + avatar upload + call UI -->
+<section class="w-64 bg-gray-800 p-4 flex flex-col">
+  <h2 class="text-xl font-bold mb-4">Profile & Settings</h2>
+
+  <div class="mb-4 text-center">
+    <img id="profile-avatar" src="<%= avatarUrl || '/default-avatar.png' %>" alt="Avatar" class="w-24 h-24 mx-auto rounded-full object-cover" />
+    <input type="file" id="avatar-upload" accept="image/*" class="mt-2" />
+    <p id="avatar-upload-msg" class="text-green-400 mt-1 hidden"></p>
+  </div>
+
+  <form id="settings-form" class="flex flex-col space-y-3 mb-6">
+    <label>
+      Bio:
+      <textarea id="bio" rows="3" class="w-full p-2 rounded text-gray-900"></textarea>
+    </label>
+
+    <label>
+      Status:
+      <select id="status" class="w-full p-2 rounded text-gray-900">
+        <option value="online">Online</option>
+        <option value="idle">Idle</option>
+        <option value="dnd">Do Not Disturb</option>
+        <option value="offline">Offline</option>
+      </select>
+    </label>
+
+    <button type="submit" class="bg-green-600 hover:bg-green-700 py-2 rounded text-white">Save Settings</button>
+  </form>
+
+  <div>
+    <h3 class="font-semibold mb-2">Call Panel</h3>
+    <p>Click "Call" or "Video Call" from user list to start</p>
+    <div id="call-modal" class="fixed inset-0 hidden items-center justify-center modal-bg">
+      <div class="bg-gray-900 rounded p-4 w-96 max-w-full flex flex-col">
+        <h2 id="call-status" class="text-lg font-bold mb-2">Calling...</h2>
+        <video id="local-video" autoplay muted playsinline class="w-full h-48 bg-black rounded mb-2"></video>
+        <video id="remote-video" autoplay playsinline class="w-full h-48 bg-black rounded mb-4"></video>
+        <div class="flex justify-between">
+          <button id="accept-call" class="bg-green-600 hover:bg-green-700 py-2 px-4 rounded text-white">Accept</button>
+          <button id="reject-call" class="bg-red-600 hover:bg-red-700 py-2 px-4 rounded text-white">Reject</button>
+          <button id="end-call" class="bg-gray-600 hover:bg-gray-700 py-2 px-4 rounded text-white hidden">End Call</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const socket = io();
+
+  // Elements
+  const userListElem = document.getElementById('user-list');
+  const messagesElem = document.getElementById('messages');
+  const chatForm = document.getElementById('chat-form');
+  const msgInput = document.getElementById('msg');
+  const friendsListElem = document.getElementById('friends-list');
+  const friendRequestsElem = document.getElementById('friend-requests');
+  const logoutBtn = document.getElementById('logout-btn');
+
+  const avatarInput = document.getElementById('avatar-upload');
+  const avatarMsg = document.getElementById('avatar-upload-msg');
+  const profileAvatar = document.getElementById('profile-avatar');
+
+  const bioInput = document.getElementById('bio');
+  const statusSelect = document.getElementById('status');
+  const settingsForm = document.getElementById('settings-form');
+
+  // Call UI
+  const callModal = document.getElementById('call-modal');
+  const callStatus = document.getElementById('call-status');
+  const localVideo = document.getElementById('local-video');
+  const remoteVideo = document.getElementById('remote-video');
+  const acceptCallBtn = document.getElementById('accept-call');
+  const rejectCallBtn = document.getElementById('reject-call');
+  const endCallBtn = document.getElementById('end-call');
+
+  let localStream;
+  let peerConnection;
+  let currentCallFrom = null;
+
+  const configuration = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+    ],
+  };
+
+  // USER DATA
+  let currentUser;
+
+  // Fetch profile data to fill settings
+  fetch('/api/profile/<%= displayName.replace(" 👑","") %>')
+    .then(r => r.json())
+    .then(profile => {
+      bioInput.value = profile.bio || '';
+      statusSelect.value = profile.status || 'online';
+      if(profile.avatarUrl) profileAvatar.src = profile.avatarUrl;
+      currentUser = profile.username || '<%= displayName.replace(" 👑","") %>';
+      loadFriendsAndRequests();
+    });
+
+  // SETTINGS FORM
+  settingsForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const bio = bioInput.value.trim();
+    const status = statusSelect.value;
+    const res = await fetch('/api/profile/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bio, status }),
+    });
+    const data = await res.json();
+    if(data.success) alert('Settings saved!');
+    else alert('Failed to save');
+  });
+
+  // AVATAR UPLOAD
+  avatarInput.addEventListener('change', async () => {
+    const file = avatarInput.files[0];
+    if(!file) return;
+    const formData = new FormData();
+    formData.append('avatar', file);
+    const res = await fetch('/upload-avatar', { method: 'POST', body: formData });
+    const data = await res.json();
+    if(data.success) {
+      avatarMsg.textContent = 'Avatar updated!';
+      avatarMsg.classList.remove('hidden');
+      profileAvatar.src = data.avatarUrl;
+    } else {
+      avatarMsg.textContent = 'Upload failed.';
+      avatarMsg.classList.remove('hidden');
+    }
+    setTimeout(() => avatarMsg.classList.add('hidden'), 3000);
+  });
+
+  // LOGOUT
+  logoutBtn.onclick = () => {
+    window.location.href = '/logout';
+  };
+
+  // USER LIST UPDATE
+  socket.on('userList', users => {
+    userListElem.innerHTML = '';
+    users.forEach(u => {
+      if(u.username === currentUser) return; // Don't show yourself here
+
+      const li = document.createElement('li');
+      li.className = 'flex items-center justify-between space-x-2';
+
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = u.username;
+      nameSpan.className = 'cursor-pointer hover:underline text-blue-400 user-link';
+
+      const btns = document.createElement('div');
+      btns.className = 'space-x-1';
+
+      // Add Friend button (if not already friend)
+      if(!friendsSet.has(u.username) && !incomingReqSet.has(u.username)) {
+        const addBtn = document.createElement('button');
+        addBtn.textContent = 'Add Friend';
+        addBtn.className = 'bg-green-600 hover:bg-green-700 px-2 py-1 rounded text-white text-sm';
+        addBtn.onclick = () => sendFriendRequest(u.username);
+        btns.appendChild(addBtn);
+      }
+
+      // Send Message button
+      if(friendsSet.has(u.username)) {
+        const msgBtn = document.createElement('button');
+        msgBtn.textContent = 'Send Msg';
+        msgBtn.className = 'bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-white text-sm';
+        msgBtn.onclick = () => openPrivateChat(u.username);
+        btns.appendChild(msgBtn);
+
+        // Call button
+        const callBtn = document.createElement('button');
+        callBtn.textContent = 'Call';
+        callBtn.className = 'bg-yellow-600 hover:bg-yellow-700 px-2 py-1 rounded text-white text-sm';
+        callBtn.onclick = () => startCall(u.username, false);
+        btns.appendChild(callBtn);
+
+        // Video Call button
+        const videoCallBtn = document.createElement('button');
+        videoCallBtn.textContent = 'Video Call';
+        videoCallBtn.className = 'bg-pink-600 hover:bg-pink-700 px-2 py-1 rounded text-white text-sm';
+        videoCallBtn.onclick = () => startCall(u.username, true);
+        btns.appendChild(videoCallBtn);
+      }
+
+      li.appendChild(nameSpan);
+      li.appendChild(btns);
+      userListElem.appendChild(li);
+    });
+  });
+
+  // FRIEND REQUESTS & FRIENDS
+  let friendsSet = new Set();
+  let incomingReqSet = new Set();
+
+  async function loadFriendsAndRequests() {
+    const res = await fetch('/api/friends');
+    const data = await res.json();
+
+    incomingReqSet = new Set(data.incomingRequests);
+    friendsSet = new Set(data.friends);
+
+    friendRequestsElem.innerHTML = '';
+    incomingReqSet.forEach(username => {
+      const li = document.createElement('li');
+      li.className = 'flex justify-between items-center space-x-2';
+
+      li.textContent = username;
+      const btnAccept = document.createElement('button');
+      btnAccept.textContent = 'Accept';
+      btnAccept.className = 'bg-green-600 hover:bg-green-700 px-2 py-1 rounded text-white text-sm';
+      btnAccept.onclick = () => respondFriendRequest(username, true);
+
+      const btnReject = document.createElement('button');
+      btnReject.textContent = 'Reject';
+      btnReject.className = 'bg-red-600 hover:bg-red-700 px-2 py-1 rounded text-white text-sm';
+      btnReject.onclick = () => respondFriendRequest(username, false);
+
+      li.appendChild(btnAccept);
+      li.appendChild(btnReject);
+
+      friendRequestsElem.appendChild(li);
+    });
+
+    friendsListElem.innerHTML = '';
+    friendsSet.forEach(username => {
+      const li = document.createElement('li');
+      li.textContent = username;
+      friendsListElem.appendChild(li);
+    });
+  }
+
+  async function sendFriendRequest(username) {
+    const res = await fetch('/friend-request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toUsername: username })
+    });
+    const data = await res.json();
+    if (data.success) {
+      alert('Friend request sent');
+      loadFriendsAndRequests();
+    } else {
+      alert(data.error || 'Failed to send request');
+    }
+  }
+
+  async function respondFriendRequest(fromUsername, accept) {
+    const res = await fetch('/friend-request/respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fromUsername, accept })
+    });
+    const data = await res.json();
+    if (data.success) {
+      loadFriendsAndRequests();
+    } else {
+      alert(data.error || 'Failed to respond');
+    }
+  }
+
+  // CHAT MESSAGES
+  socket.on('message', msg => {
+    addMessage(msg);
+  });
+
+  chatForm.addEventListener('submit', e => {
+    e.preventDefault();
+    if (!msgInput.value.trim()) return;
+    socket.emit('chatMessage', msgInput.value.trim());
+    msgInput.value = '';
+  });
+
+  function addMessage(msg) {
+    const li = document.createElement('li');
+    li.className = 'p-2 rounded bg-gray-700';
+    li.innerHTML = `<b>${msg.username}</b>: ${msg.text}`;
+    messagesElem.appendChild(li);
+    messagesElem.scrollTop = messagesElem.scrollHeight;
+  }
+
+  // PRIVATE CHATS - minimal implementation (you can expand UI)
+  // For brevity: Not implemented here, but use similar structure with socket events 'privateMessage'
+
+  // WEBRTC CALLS
+
+  let isCalling = false;
+  let isVideoCall = false;
+  let callTarget = null;
+
+  acceptCallBtn.onclick = async () => {
+    await setupMedia(true);
+    callStatus.textContent = 'Call in progress...';
+    acceptCallBtn.style.display = 'none';
+    rejectCallBtn.style.display = 'none';
+    endCallBtn.style.display = 'inline-block';
+
+    peerConnection.ondatachannel = event => {
+      event.channel.onmessage = e => console.log('Data channel message:', e.data);
+    };
+
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    socket.emit('call-answer', { toUsername: currentCallFrom, answer });
+
+    // Show video modal
+  };
+
+  rejectCallBtn.onclick = () => {
+    socket.emit('call-reject', { toUsername: currentCallFrom });
+    endCall();
+  };
+
+  endCallBtn.onclick = () => {
+    endCall();
+  };
+
+  async function setupMedia(video = true) {
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ video, audio: true });
+      localVideo.srcObject = localStream;
+
+      peerConnection = new RTCPeerConnection(configuration);
+
+      localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+      peerConnection.ontrack = event => {
+        remoteVideo.srcObject = event.streams[0];
+      };
+
+      peerConnection.onicecandidate = event => {
+        if (event.candidate) {
+          socket.emit('ice-candidate', { toUsername: callTarget, candidate: event.candidate });
+        }
+      };
+
+      peerConnection.onconnectionstatechange = () => {
+        if(peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed' || peerConnection.connectionState === 'closed') {
+          endCall();
+        }
+      };
+    } catch (err) {
+      alert('Media error: ' + err.message);
+      endCall();
+    }
+  }
+
+  async function startCall(username, video) {
+    if (isCalling) {
+      alert('Already in a call!');
+      return;
+    }
+    callTarget = username;
+    isVideoCall = video;
+    await setupMedia(video);
+
+    peerConnection.onicecandidate = event => {
+      if (event.candidate) {
+        socket.emit('ice-candidate', { toUsername: username, candidate: event.candidate });
+      }
+    };
+
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+
+    socket.emit('call-user', { toUsername: username, offer });
+
+    callStatus.textContent = `Calling ${username}...`;
+    callModal.classList.remove('hidden');
+    acceptCallBtn.style.display = 'none';
+    rejectCallBtn.style.display = 'inline-block';
+    endCallBtn.style.display = 'none';
+    isCalling = true;
+  }
+
+  socket.on('incoming-call', async ({ fromUsername, offer }) => {
+    if (isCalling) {
+      socket.emit('call-reject', { toUsername: fromUsername });
+      return;
+    }
+    currentCallFrom = fromUsername;
+    callModal.classList.remove('hidden');
+    callStatus.textContent = `Incoming call from ${fromUsername}`;
+    acceptCallBtn.style.display = 'inline-block';
+    rejectCallBtn.style.display = 'inline-block';
+    endCallBtn.style.display = 'none';
+
+    peerConnection = new RTCPeerConnection(configuration);
+
+    peerConnection.onicecandidate = event => {
+      if (event.candidate) {
+        socket.emit('ice-candidate', { toUsername: fromUsername, candidate: event.candidate });
+      }
+    };
+
+    peerConnection.ontrack = event => {
+      remoteVideo.srcObject = event.streams[0];
+    };
+
+    localStream = null;
+
+    await peerConnection.setRemoteDescription(offer);
+  });
+
+  socket.on('call-accepted', async ({ fromUsername, answer }) => {
+    if (!peerConnection) return;
+    await peerConnection.setRemoteDescription(answer);
+    callStatus.textContent = 'Call connected';
+    acceptCallBtn.style.display = 'none';
+    rejectCallBtn.style.display = 'none';
+    endCallBtn.style.display = 'inline-block';
+  });
+
+  socket.on('call-rejected', ({ fromUsername }) => {
+    alert(`${fromUsername} rejected the call`);
+    endCall();
+  });
+
+  socket.on('ice-candidate', async ({ candidate }) => {
+    try {
+      if (candidate) await peerConnection.addIceCandidate(candidate);
+    } catch (e) {
+      console.error('Error adding ICE candidate', e);
+    }
+  });
+
+  function endCall() {
+    if (peerConnection) {
+      peerConnection.close();
+      peerConnection = null;
+    }
+    if (localStream) {
+      localStream.getTracks().forEach(t => t.stop());
+      localStream = null;
+    }
+    callModal.classList.add('hidden');
+    callStatus.textContent = '';
+    isCalling = false;
+    currentCallFrom = null;
+    callTarget = null;
+  }
+
+</script>
+</body>
+</html>

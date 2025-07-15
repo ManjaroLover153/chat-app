@@ -1,0 +1,9 @@
+# Node.js dependencies
+/node_modules/
+
+# Database files (quick.db uses SQLite files)
+*.sqlite3
+*.db
+
+# Uploaded avatars or files - exclude if you don't want them in git
+/public/avatars/
